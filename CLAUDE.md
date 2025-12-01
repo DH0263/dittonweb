@@ -243,8 +243,62 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 ### ClassUp 로그인 방식
 - 웹 UI에서 `/classup/login/send-code` → `/classup/login/verify` API로 로그인
 - headless 브라우저가 백그라운드에서 ClassUp에 로그인
-- 세션은 `classup_session.json`에 저장됨
+- 세션은 `classup_session.json`에 저장됨 + PostgreSQL에 백업 (배포 영속성)
 - 배포 서버에서도 웹 UI로 로그인 가능
+- 컨테이너 재시작 시 DB에서 세션 자동 복원
+
+---
+
+## Railway 배포 체크리스트
+
+### 필수 환경변수 (Railway Dashboard → Service → Variables)
+
+**백엔드 서비스:**
+| 변수명 | 설명 | 예시 |
+|--------|------|------|
+| `DATABASE_URL` | PostgreSQL 연결 | Railway 자동 제공 (DB 연결 시) |
+| `ALLOWED_ORIGINS` | CORS 허용 도메인 (콤마 구분) | `https://frontend.railway.app,http://localhost:5173` |
+| `DISCORD_WEBHOOK_ALERT` | 경고 알림용 Discord 웹훅 | `https://discord.com/api/webhooks/...` |
+| `DISCORD_WEBHOOK_GENERAL` | 일반 알림용 Discord 웹훅 | `https://discord.com/api/webhooks/...` |
+| `GEMINI_API_KEY` | AI 채팅용 (선택) | Gemini API 키 |
+
+**프론트엔드 서비스:**
+| 변수명 | 설명 | 예시 |
+|--------|------|------|
+| `VITE_API_URL` | 백엔드 API URL (빌드 시 필요) | `https://backend.railway.app` |
+
+### 배포 시 주의사항 (개발자 필독!)
+
+1. **파일 저장 금지**
+   - 컨테이너는 ephemeral (일시적) → 재시작 시 모든 파일 삭제됨
+   - 세션, 설정, 로그 등은 반드시 DB 또는 외부 스토리지에 저장
+   - ClassUp 세션은 PostgreSQL `classup_sessions` 테이블에 자동 백업됨
+
+2. **환경변수 필수**
+   - 모든 설정은 환경변수로 관리 (하드코딩 금지!)
+   - Discord 웹훅, API 키, CORS 설정 등
+
+3. **CORS 설정 필수**
+   - 프로덕션 프론트엔드 도메인을 `ALLOWED_ORIGINS`에 반드시 추가
+   - 와일드카드(`*`)는 `allow_credentials=True`와 충돌하므로 사용 금지
+
+4. **PORT 동적 할당**
+   - Railway는 `$PORT` 환경변수로 포트 제공
+   - Dockerfile CMD에서 `${PORT:-8000}` 형식으로 사용
+
+5. **빌드 시 환경변수**
+   - Vite 프론트엔드의 `VITE_*` 변수는 빌드 타임에 치환됨
+   - Railway에서 빌드 시 환경변수 자동 주입
+
+### 자주 발생하는 오류와 해결방법
+
+| 오류 | 원인 | 해결방법 |
+|------|------|---------|
+| "Not Found - train has not arrived" | `$PORT` 미사용 | Dockerfile CMD에서 `${PORT:-8000}` 사용 |
+| CORS 에러 (API 호출 실패) | `ALLOWED_ORIGINS` 누락 | 프론트엔드 도메인 환경변수에 추가 |
+| 학생 추가 실패 | CORS 또는 DB 연결 오류 | Railway 로그 확인, 환경변수 점검 |
+| ClassUp 로그인 후 세션 손실 | 컨테이너 재시작 | 자동 DB 복원 (v2024.12 이후 수정됨) |
+| Discord 알림 안 옴 | 웹훅 환경변수 미설정 | `DISCORD_WEBHOOK_*` 환경변수 설정 |
 
 ## Future Implementation (TODO)
 

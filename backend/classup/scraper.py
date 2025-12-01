@@ -152,17 +152,48 @@ class ClassUpScraper:
 
 
 def has_saved_session() -> bool:
-    """저장된 세션 파일이 있는지 확인"""
-    return SESSION_FILE.exists()
+    """저장된 세션이 있는지 확인 (파일 또는 DB)"""
+    if SESSION_FILE.exists():
+        return True
+
+    # 파일이 없으면 DB에서 복원 시도
+    try:
+        from .session_db import ensure_session_file
+        return ensure_session_file()
+    except Exception as e:
+        logger.error(f"DB 세션 확인 실패: {e}")
+        return False
 
 
 def delete_session():
-    """저장된 세션 파일 삭제"""
+    """저장된 세션 삭제 (파일 + DB)"""
+    deleted = False
+
+    # 파일 삭제
     if SESSION_FILE.exists():
         SESSION_FILE.unlink()
         logger.info("세션 파일 삭제됨")
-        return True
-    return False
+        deleted = True
+
+    # DB에서도 삭제
+    try:
+        from .session_db import delete_session_from_db
+        if delete_session_from_db():
+            deleted = True
+    except Exception as e:
+        logger.error(f"DB 세션 삭제 실패: {e}")
+
+    return deleted
+
+
+def backup_session_to_db():
+    """세션 파일을 DB에 백업 (로그인 성공 후 호출)"""
+    try:
+        from .session_db import save_session_to_db
+        return save_session_to_db()
+    except Exception as e:
+        logger.error(f"세션 DB 백업 실패: {e}")
+        return False
 
 
 # ============ 독립 실행용 함수 (수동 로그인) ============

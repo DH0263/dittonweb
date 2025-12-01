@@ -594,3 +594,16 @@ class PhoneSubmission(Base):
     # Relationships
     student = relationship("Student", backref="phone_submissions")
 
+
+# ==================== ClassUp 세션 저장 (배포 영속성) ====================
+
+class ClassUpSession(Base):
+    """ClassUp 로그인 세션 저장 (컨테이너 재시작 시에도 유지)"""
+    __tablename__ = "classup_sessions"
+
+    id = Column(Integer, primary_key=True, index=True)
+    session_key = Column(String, unique=True, default="default")  # 세션 식별자
+    session_data = Column(Text, nullable=False)  # JSON 형식의 세션 데이터
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+

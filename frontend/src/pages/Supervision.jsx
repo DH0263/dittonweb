@@ -164,9 +164,11 @@ function Supervision() {
                     timestamp: new Date().toISOString()
                 }))
                 // 비동기 API 호출 (sendBeacon 사용)
+                // VITE_API_URL 환경변수 사용 (프로덕션 배포 지원)
+                const API_URL = import.meta.env.VITE_API_URL || ''
                 const formData = new FormData()
                 formData.append('notes', '강제종료 - 페이지 이탈')
-                navigator.sendBeacon(`/api/patrols/${currentPatrol.patrol_id}/force-end`, formData)
+                navigator.sendBeacon(`${API_URL}/patrols/${currentPatrol.patrol_id}/force-end`, formData)
             }
         }
 

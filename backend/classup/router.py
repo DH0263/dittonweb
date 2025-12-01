@@ -30,20 +30,14 @@ _scraper_instance: Optional[ClassUpScraper] = None
 _sync_running = False
 _sync_task: Optional[asyncio.Task] = None
 
-# Discord 웹훅 URL (채널 분리)
+# Discord 웹훅 URL (채널 분리) - Railway 환경변수로 설정 필수!
 # 경고 알림 전용 (외출 미복귀, 비정상 외출, 강제퇴장 다음날 알림 등)
-DISCORD_WEBHOOK_ALERT = os.getenv(
-    "DISCORD_WEBHOOK_ALERT",
-    "https://discord.com/api/webhooks/1442370603003809892/xSDV1tl1iQ3omxzOzGjOHTDeJ9669x4qqGqbYSrqQ4NgsdZvHTygu7V7S6rCjfvu8PkU"
-)
-# 일반 출입 알림 (입장, 외출, 이동 등 - 테스트용, 나중에 삭제 예정)
-DISCORD_WEBHOOK_GENERAL = os.getenv(
-    "DISCORD_WEBHOOK_GENERAL",
-    "https://discord.com/api/webhooks/1444878484995571764/nFgHFYzLRzNf8heFIuxdN-J_gfdjv3CRG-MnqrTMKUlwuLO6lhWOEgOrRcq48y_XnVG_"
-)
+DISCORD_WEBHOOK_ALERT = os.getenv("DISCORD_WEBHOOK_ALERT", "")
+# 일반 출입 알림 (입장, 외출, 이동 등)
+DISCORD_WEBHOOK_GENERAL = os.getenv("DISCORD_WEBHOOK_GENERAL", "")
 
 # 기존 호환성 유지
-DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", DISCORD_WEBHOOK_ALERT)
+DISCORD_WEBHOOK_URL = os.getenv("DISCORD_WEBHOOK_URL", "") or DISCORD_WEBHOOK_ALERT
 
 
 async def send_discord_notification(title: str, message: str, color: int = 0x5865F2, fields: list = None, webhook_url: str = None):
@@ -1057,6 +1051,15 @@ async def verify_login_code(verification_code: str):
     # 결과 확인
     if has_saved_session():
         clear_login_state()
+
+        # 세션을 DB에 백업 (컨테이너 재시작 시에도 유지)
+        try:
+            from .scraper import backup_session_to_db
+            backup_session_to_db()
+            logger.info("세션 DB 백업 완료")
+        except Exception as e:
+            logger.warning(f"세션 DB 백업 실패 (계속 진행): {e}")
+
         return {
             "status": "success",
             "message": "로그인이 완료되었습니다! 이제 동기화를 시작할 수 있습니다.",

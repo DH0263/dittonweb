@@ -108,9 +108,16 @@ def validate_period_timing(requested_period: int) -> dict:
 
 app = FastAPI(title="Ditton Bot API")
 
+# CORS 허용 도메인 (환경변수로 설정, 콤마로 구분)
+# 예: ALLOWED_ORIGINS=https://frontend.railway.app,http://localhost:5173
+ALLOWED_ORIGINS = os.getenv(
+    "ALLOWED_ORIGINS",
+    "http://localhost:5173,http://127.0.0.1:5173"
+).split(",")
+
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173", "*"], # Vite default port + 키오스크용
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
