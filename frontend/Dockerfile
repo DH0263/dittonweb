@@ -24,17 +24,16 @@ RUN npm run build
 # Stage 2: Production
 FROM nginx:alpine
 
-# Copy custom nginx config
-COPY nginx.conf /etc/nginx/conf.d/default.conf
-
 # Copy built assets from builder
 COPY --from=builder /app/dist /usr/share/nginx/html
 
+# Copy nginx config as template (nginx:alpine auto-processes templates)
+COPY nginx.conf /etc/nginx/templates/default.conf.template
+
+# Default port (Railway overrides with PORT env var)
+ENV PORT=80
+
 # Expose port
 EXPOSE 80
-
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:80 || exit 1
 
 CMD ["nginx", "-g", "daemon off;"]
