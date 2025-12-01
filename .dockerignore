@@ -1,0 +1,54 @@
+# Frontend folder (has its own Dockerfile)
+# Note: DO NOT exclude backend folder - it's needed for the build!
+
+# Node modules
+node_modules/
+frontend/node_modules/
+
+# Git
+.git/
+.gitignore
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+venv/
+.venv/
+ENV/
+
+# Environment files (secrets)
+.env
+.env.local
+*.env
+backend/.env
+frontend/.env
+
+# Logs
+*.log
+logs/
+
+# Temporary
+tmp/
+temp/
+*.tmp
+
+# Railway local config
+.railway/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Build artifacts
+frontend/dist/
