@@ -1,12 +1,10 @@
 fastapi
 uvicorn
 sqlalchemy
+pydantic
+discord.py>=2.0.0
 python-dotenv
 pytz
 httpx
-apscheduler
-solapi
-google-generativeai
-Pillow
-psycopg2-binary
 playwright
+apscheduler
