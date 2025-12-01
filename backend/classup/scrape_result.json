@@ -1,0 +1,78 @@
+{
+  "success": true,
+  "records": [
+    {
+      "student_name": "전동현",
+      "phone_number": "010-6293-1656",
+      "available_time": "05:00~23:59",
+      "status": "입장",
+      "record_time": "2025-12-01T13:45:03+09:00"
+    },
+    {
+      "student_name": "전동현",
+      "phone_number": "010-6293-1656",
+      "available_time": "05:00~23:59",
+      "status": "입장",
+      "record_time": "2025-12-01T13:45:03+09:00"
+    },
+    {
+      "student_name": "전동현",
+      "phone_number": "010-6293-1656",
+      "available_time": "05:00~23:59",
+      "status": "퇴장",
+      "record_time": "2025-12-01T13:44:14+09:00"
+    },
+    {
+      "student_name": "전동현",
+      "phone_number": "010-6293-1656",
+      "available_time": "05:00~23:59",
+      "status": "퇴장",
+      "record_time": "2025-12-01T13:44:14+09:00"
+    },
+    {
+      "student_name": "전동현",
+      "phone_number": "010-6293-1656",
+      "available_time": "05:00~23:59",
+      "status": "입장",
+      "record_time": "2025-12-01T13:20:41+09:00"
+    },
+    {
+      "student_name": "전동현",
+      "phone_number": "010-6293-1656",
+      "available_time": "05:00~23:59",
+      "status": "입장",
+      "record_time": "2025-12-01T13:20:41+09:00"
+    },
+    {
+      "student_name": "전동현",
+      "phone_number": "010-6293-1656",
+      "available_time": "05:00~23:59",
+      "status": "퇴장",
+      "record_time": "2025-12-01T13:20:18+09:00"
+    },
+    {
+      "student_name": "전동현",
+      "phone_number": "010-6293-1656",
+      "available_time": "05:00~23:59",
+      "status": "퇴장",
+      "record_time": "2025-12-01T13:20:18+09:00"
+    },
+    {
+      "student_name": "전동현",
+      "phone_number": "010-6293-1656",
+      "available_time": "05:00~23:59",
+      "status": "입장",
+      "record_time": "2025-12-01T13:06:24+09:00"
+    },
+    {
+      "student_name": "전동현",
+      "phone_number": "010-6293-1656",
+      "available_time": "05:00~23:59",
+      "status": "입장",
+      "record_time": "2025-12-01T13:06:24+09:00"
+    }
+  ],
+  "scrape_count": 231,
+  "elapsed_ms": 3444,
+  "timestamp": "2025-12-01T13:59:34.191629+09:00"
+}

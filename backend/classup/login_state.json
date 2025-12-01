@@ -1,0 +1,6 @@
+{
+  "status": "awaiting_code",
+  "message": "인증번호를 입력해주세요.",
+  "phone_number": "01012345678",
+  "step": "verify_code"
+}
