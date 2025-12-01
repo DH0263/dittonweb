@@ -1,6 +1,7 @@
 # Backend Dockerfile - FastAPI + Playwright for ClassUp
-# This Dockerfile is at repo root for Railway's GitHub integration
-FROM python:3.11-slim
+# Simplified: copies everything and extracts backend
+# Cache buster: v3
+FROM python:3.11-slim AS builder
 
 # Install system dependencies for Playwright + PostgreSQL
 RUN apt-get update && apt-get install -y \
@@ -27,8 +28,21 @@ RUN apt-get update && apt-get install -y \
 
 WORKDIR /app
 
-# Copy backend requirements (from backend folder)
-COPY backend/requirements.txt ./requirements.txt
+# Copy everything first
+COPY . /build-context/
+
+# Debug: List what was copied
+RUN ls -la /build-context/ && \
+    echo "---" && \
+    ls -la /build-context/backend/ 2>/dev/null || echo "No backend folder found"
+
+# Copy requirements from wherever they are
+RUN if [ -f /build-context/backend/requirements.txt ]; then \
+        cp /build-context/backend/requirements.txt /app/requirements.txt; \
+    elif [ -f /build-context/requirements.txt ]; then \
+        cp /build-context/requirements.txt /app/requirements.txt; \
+    fi
+
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Install Playwright and browser
@@ -36,8 +50,15 @@ RUN pip install playwright && \
     playwright install chromium && \
     playwright install-deps chromium
 
-# Copy backend application code
-COPY backend/ ./
+# Copy backend code from wherever it is
+RUN if [ -d /build-context/backend ]; then \
+        cp -r /build-context/backend/* /app/; \
+    else \
+        cp -r /build-context/* /app/; \
+    fi
+
+# Clean up build context
+RUN rm -rf /build-context
 
 # Create data directory
 RUN mkdir -p /app/data
