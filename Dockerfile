@@ -66,9 +66,19 @@ RUN mkdir -p /app/data
 # Default port (Railway overrides via $PORT)
 ENV PORT=8000
 
-# Health check
+# Health check (skip for worker services that don't have /docs endpoint)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT}/docs || exit 1
+    CMD wget --no-verbose --tries=1 --spider http://localhost:${PORT}/ || exit 1
 
-# Run the application
-CMD ["sh", "-c", "uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}"]
+# Create startup script that detects service type at RUNTIME
+RUN printf '#!/bin/sh\n\
+if [ -f /app/main.py ] && grep -q "run_worker" /app/main.py 2>/dev/null; then\n\
+    echo "Starting ClassUp Worker..."\n\
+    exec python main.py\n\
+else\n\
+    echo "Starting FastAPI Server..."\n\
+    exec uvicorn main:app --host 0.0.0.0 --port ${PORT:-8000}\n\
+fi\n' > /app/start.sh && chmod +x /app/start.sh
+
+# Run the startup script
+CMD ["/app/start.sh"]
