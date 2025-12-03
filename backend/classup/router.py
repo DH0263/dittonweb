@@ -30,6 +30,9 @@ _scraper_instance: Optional[ClassUpScraper] = None
 _sync_running = False
 _sync_task: Optional[asyncio.Task] = None
 
+# 외부 Worker 사용 모드 (classup-worker 서비스가 별도로 동작할 때)
+EXTERNAL_WORKER_MODE = os.getenv("CLASSUP_WORKER_EXTERNAL", "").lower() in ("true", "1", "yes")
+
 # Discord 웹훅 URL (채널 분리) - Railway 환경변수로 설정 필수!
 # 경고 알림 전용 (외출 미복귀, 비정상 외출, 강제퇴장 다음날 알림 등)
 DISCORD_WEBHOOK_ALERT = os.getenv("DISCORD_WEBHOOK_ALERT", "")
@@ -711,7 +714,7 @@ async def continuous_sync_loop(db_session_factory):
             logger.error(f"동기화 오류: {e}")
 
         # 3초 대기 (Worker가 2초마다 스크래핑하므로 충분)
-        await asyncio.sleep(3)
+        await asyncio.sleep(30)  # 30초 간격으로 동기화 (서버 부하 감소)
 
     # Worker 종료
     if _worker_process and _worker_process.poll() is None:
@@ -733,10 +736,36 @@ async def continuous_sync_loop(db_session_factory):
 # ============ API 엔드포인트 ============
 
 @router.get("/status")
-async def get_sync_status():
+async def get_sync_status(db: Session = Depends(get_db)):
     """동기화 상태 확인"""
     import json
     from pathlib import Path
+
+    # 외부 Worker 모드 체크
+    if EXTERNAL_WORKER_MODE:
+        # DB에서 세션 확인
+        session = db.query(models.ClassUpSession).filter_by(session_key="default").first()
+        session_exists = session is not None
+
+        # 최근 SyncLog로 Worker 상태 확인
+        recent_log = db.query(ClassUpSyncLog).order_by(
+            ClassUpSyncLog.sync_time.desc()
+        ).first()
+
+        worker_active = False
+        if recent_log:
+            from datetime import timedelta
+            time_diff = datetime.now(KST) - recent_log.sync_time.replace(tzinfo=KST)
+            worker_active = time_diff < timedelta(minutes=1)  # 1분 이내 로그 있으면 활성
+
+        return {
+            "running": True,  # 외부 Worker가 동작 중
+            "external_worker": True,
+            "logged_in": session_exists,
+            "browser_active": worker_active,
+            "session_saved": session_exists,
+            "last_sync": recent_log.sync_time.isoformat() if recent_log else None
+        }
 
     status_file = Path(__file__).parent / "worker_status.json"
     worker_active = False
@@ -784,6 +813,14 @@ async def clear_session():
 async def start_sync(background_tasks: BackgroundTasks):
     """클래스업 동기화 시작"""
     global _sync_running, _sync_task
+
+    # 외부 Worker 모드일 때는 Worker가 별도로 동작
+    if EXTERNAL_WORKER_MODE:
+        return {
+            "status": "external_worker",
+            "message": "외부 ClassUp Worker 서비스가 동작 중입니다. 스크래핑은 별도 서비스에서 처리됩니다.",
+            "external_worker": True
+        }
 
     if _sync_running:
         return {"status": "already_running", "message": "동기화가 이미 실행 중입니다."}
@@ -842,6 +879,34 @@ async def sync_once(db: Session = Depends(get_db)):
         result = await sync_classup_data(db)
         return {"status": "success", **result}
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/backup-session")
+async def backup_session_to_database():
+    """현재 세션을 DB에 백업 (classup-worker용)"""
+    if not has_saved_session():
+        return {
+            "status": "error",
+            "message": "저장된 로그인 세션이 없습니다. 먼저 로그인해주세요."
+        }
+
+    try:
+        from .scraper import backup_session_to_db
+        success = backup_session_to_db()
+        if success:
+            logger.info("세션 DB 백업 완료 (수동)")
+            return {
+                "status": "success",
+                "message": "세션이 DB에 백업되었습니다. classup-worker가 이 세션을 사용할 수 있습니다."
+            }
+        else:
+            return {
+                "status": "error",
+                "message": "세션 백업에 실패했습니다."
+            }
+    except Exception as e:
+        logger.error(f"세션 백업 오류: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -918,6 +983,22 @@ async def get_today_summary(db: Session = Depends(get_db)):
         "exit_count": exit_count,
         "late_count": late_count
     }
+
+
+# ============ 데이터 정리 API ============
+
+@router.get("/storage-stats")
+async def get_storage_stats_api(db: Session = Depends(get_db)):
+    """ClassUp 저장소 통계 조회"""
+    from .cleanup import get_storage_stats
+    return get_storage_stats(db)
+
+
+@router.post("/cleanup")
+async def run_cleanup_api(db: Session = Depends(get_db)):
+    """수동으로 ClassUp 데이터 정리 실행"""
+    from .cleanup import run_cleanup
+    return run_cleanup(db)
 
 
 # ============ 웹 로그인 API ============
