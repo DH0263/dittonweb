@@ -66,7 +66,7 @@ class Student(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     seat_number = Column(String, nullable=True)
-    phone = Column(String, nullable=True)
+    student_phone = Column(String, nullable=True)  # DB uses student_phone, not phone
     parent_phone = Column(String, nullable=True)
     status = Column(String, default="재원")
 
@@ -150,7 +150,7 @@ def match_student(name: str, phone: str, db) -> int:
     if phone:
         clean_phone = phone.replace("-", "").replace(" ", "")
         student = db.query(Student).filter(
-            (Student.phone.contains(clean_phone[-4:])) |
+            (Student.student_phone.contains(clean_phone[-4:])) |
             (Student.parent_phone.contains(clean_phone[-4:]))
         ).first()
         if student:
