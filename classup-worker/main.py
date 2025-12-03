@@ -193,51 +193,49 @@ def scrape_attendance(page) -> list:
 
         page.wait_for_selector("table", timeout=10000)
 
-        # 오늘 날짜 필터 클릭 (있다면)
-        try:
-            today_btn = page.locator("button:has-text('오늘')").first
-            if today_btn.is_visible():
-                today_btn.click()
-                page.wait_for_timeout(500)
-        except:
-            pass
-
         records = []
-        rows = page.locator("table tbody tr").all()
+        # _fast_worker와 동일한 셀렉터 사용
+        rows = page.query_selector_all('table tbody tr, table tr')
+        logger.info(f"테이블 행 수: {len(rows)}")
 
         for row in rows:
             try:
-                cells = row.locator("td").all()
-                if len(cells) >= 4:
+                cells = row.query_selector_all('td')
+
+                # _fast_worker와 동일한 5셀 구조: name, phone, available_time, status, record_time
+                if len(cells) >= 5:
                     name = cells[0].inner_text().strip()
-                    phone = cells[1].inner_text().strip() if len(cells) > 1 else ""
-                    available = cells[2].inner_text().strip() if len(cells) > 2 else ""
-                    status_cell = cells[3].inner_text().strip() if len(cells) > 3 else ""
+                    phone = cells[1].inner_text().strip()
+                    available_time = cells[2].inner_text().strip()
+                    status = cells[3].inner_text().strip()
+                    record_time_str = cells[4].inner_text().strip()
 
-                    # 상태 파싱 (입장 14:30 형태)
-                    parts = status_cell.split()
-                    if len(parts) >= 2:
-                        status = parts[0]
-                        time_str = parts[1]
-                        detail = " ".join(parts[2:]) if len(parts) > 2 else None
-
-                        # 시간 파싱
-                        try:
+                    # 시간 파싱 (예: "2025-12-03 14:30:00" 또는 "14:30")
+                    record_time = None
+                    try:
+                        if " " in record_time_str:
+                            # Full datetime format
+                            record_time = datetime.strptime(record_time_str, "%Y-%m-%d %H:%M:%S")
+                            record_time = KST.localize(record_time)
+                        elif ":" in record_time_str:
+                            # Time only
                             today = datetime.now(KST).date()
-                            hour, minute = map(int, time_str.split(":"))
+                            parts = record_time_str.split(":")
+                            hour, minute = int(parts[0]), int(parts[1])
                             record_time = datetime(today.year, today.month, today.day,
                                                    hour, minute, tzinfo=KST)
+                    except:
+                        pass
 
-                            records.append({
-                                "name": name,
-                                "phone": phone,
-                                "available_time": available,
-                                "status": status,
-                                "status_detail": detail,
-                                "record_time": record_time
-                            })
-                        except:
-                            pass
+                    if name and status and record_time:
+                        records.append({
+                            "name": name,
+                            "phone": phone,
+                            "available_time": available_time,
+                            "status": status,
+                            "status_detail": None,
+                            "record_time": record_time
+                        })
             except Exception as e:
                 continue
 
