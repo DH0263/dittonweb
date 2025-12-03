@@ -304,7 +304,8 @@ def run_worker():
 
         context = browser.new_context(
             viewport={'width': 1920, 'height': 1080},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            ignore_https_errors=True  # SSL 인증서 오류 무시
         )
 
         # 세션 쿠키 설정
