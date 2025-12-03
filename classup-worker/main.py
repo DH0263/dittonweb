@@ -175,6 +175,14 @@ def scrape_attendance(page) -> list:
     """출입 기록 스크래핑"""
     try:
         page.goto(CLASSUP_URL, timeout=30000)
+        current_url = page.url
+        logger.info(f"현재 URL: {current_url}")
+
+        # 로그인 페이지로 리다이렉트되었는지 확인
+        if "login" in current_url.lower():
+            logger.error("로그인 페이지로 리다이렉트됨 - 세션이 만료되었을 수 있습니다")
+            return []
+
         page.wait_for_selector("table", timeout=10000)
 
         # 오늘 날짜 필터 클릭 (있다면)
