@@ -112,7 +112,8 @@ class ClassUpSession(Base):
 
 # ============ 스크래퍼 ============
 
-CLASSUP_URL = "https://www.classup.co.kr/member/attendance"
+# 올바른 URL - dittonweb과 동일하게 academy.classup.io 사용
+CLASSUP_URL = "https://academy.classup.io/user/entrance"
 
 SESSION_FILE = Path(__file__).parent / "classup_session.json"
 
@@ -174,7 +175,10 @@ def is_duplicate(db, name: str, status: str, record_time: datetime) -> bool:
 def scrape_attendance(page) -> list:
     """출입 기록 스크래핑"""
     try:
-        page.goto(CLASSUP_URL, timeout=30000)
+        # networkidle 대기하여 JavaScript 렌더링 완료 보장
+        page.goto(CLASSUP_URL, wait_until='networkidle', timeout=30000)
+        page.wait_for_timeout(500)  # 추가 대기
+
         current_url = page.url
         logger.info(f"현재 URL: {current_url}")
 
@@ -182,6 +186,10 @@ def scrape_attendance(page) -> list:
         if "login" in current_url.lower():
             logger.error("로그인 페이지로 리다이렉트됨 - 세션이 만료되었을 수 있습니다")
             return []
+
+        # 팝업 닫기 (있을 경우)
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(200)
 
         page.wait_for_selector("table", timeout=10000)
 
