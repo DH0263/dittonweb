@@ -114,19 +114,21 @@ class ClassUpSession(Base):
 
 CLASSUP_URL = "https://www.classup.co.kr/member/attendance"
 
+SESSION_FILE = Path(__file__).parent / "classup_session.json"
+
 def get_session_from_db():
-    """DB에서 세션 쿠키 조회"""
+    """DB에서 세션 storage_state 조회 및 파일로 저장"""
     db = SessionLocal()
     try:
         session = db.query(ClassUpSession).filter_by(session_key="default").first()
         if session:
-            # Playwright storage_state는 {"cookies": [...], "origins": [...]} 형태
-            # add_cookies()는 cookies 배열만 필요
+            # storage_state 전체를 파일로 저장 (Playwright가 파일 경로 필요)
+            with open(SESSION_FILE, 'w', encoding='utf-8') as f:
+                f.write(session.session_data)
+
             storage_state = json.loads(session.session_data)
-            if isinstance(storage_state, dict) and "cookies" in storage_state:
-                return storage_state["cookies"]
-            # 이미 배열이면 그대로 반환 (호환성)
-            return storage_state
+            cookie_count = len(storage_state.get("cookies", [])) if isinstance(storage_state, dict) else 0
+            return cookie_count  # 쿠키 개수 반환 (성공 여부 확인용)
         return None
     finally:
         db.close()
@@ -286,15 +288,15 @@ def run_worker():
     """워커 메인 루프"""
     logger.info("ClassUp Worker 시작")
 
-    # 세션 확인
-    session_cookies = get_session_from_db()
-    if not session_cookies:
+    # 세션 확인 및 파일로 저장
+    cookie_count = get_session_from_db()
+    if not cookie_count:
         logger.error("세션이 없습니다. 먼저 메인 서버에서 ClassUp 로그인을 해주세요.")
         logger.info("30초 후 재시도...")
         time.sleep(30)
         return run_worker()  # 재시도
 
-    logger.info(f"세션 로드 완료: {len(session_cookies)}개 쿠키")
+    logger.info(f"세션 로드 완료: {cookie_count}개 쿠키")
 
     with sync_playwright() as p:
         browser = p.chromium.launch(
@@ -302,14 +304,15 @@ def run_worker():
             args=['--no-sandbox', '--disable-dev-shm-usage']
         )
 
+        # storage_state 파일 경로로 전체 세션 로드 (쿠키 + localStorage)
         context = browser.new_context(
             viewport={'width': 1920, 'height': 1080},
             user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            ignore_https_errors=True  # SSL 인증서 오류 무시
+            ignore_https_errors=True,  # SSL 인증서 오류 무시
+            locale='ko-KR',
+            timezone_id='Asia/Seoul',
+            storage_state=str(SESSION_FILE)  # 전체 세션 상태 로드
         )
-
-        # 세션 쿠키 설정
-        context.add_cookies(session_cookies)
 
         page = context.new_page()
 
