@@ -1,4 +1,4 @@
-"""ClassUp 스크래퍼 독립 워커 - 2초마다 출입 기록 스크래핑"""
+"""ClassUp 스크래퍼 독립 워커 - 안정적인 스크래핑"""
 import os
 import sys
 import time
@@ -10,7 +10,7 @@ from pathlib import Path
 from http.server import HTTPServer, BaseHTTPRequestHandler
 
 import pytz
-from playwright.sync_api import sync_playwright
+from playwright.sync_api import sync_playwright, Error as PlaywrightError
 
 # ============ Healthcheck 서버 ============
 class HealthHandler(BaseHTTPRequestHandler):
@@ -38,15 +38,15 @@ if not DATABASE_URL:
     sys.exit(1)
 
 # SQLAlchemy 설정
-from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey, Date, Time, func
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean, ForeignKey
 from sqlalchemy.ext.declarative import declarative_base
-from sqlalchemy.orm import sessionmaker, relationship
+from sqlalchemy.orm import sessionmaker
 
 # Postgres URL 변환 (Railway 형식)
 if DATABASE_URL.startswith("postgres://"):
     DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
 
-engine = create_engine(DATABASE_URL)
+engine = create_engine(DATABASE_URL, pool_pre_ping=True)
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
 
@@ -59,6 +59,10 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# ============ 설정 ============
+SCRAPE_INTERVAL = 5  # 5초 간격 (안정성을 위해)
+BROWSER_RESTART_INTERVAL = 50  # 50회마다 브라우저 재시작
+
 # ============ 모델 정의 ============
 
 class Student(Base):
@@ -66,7 +70,7 @@ class Student(Base):
     id = Column(Integer, primary_key=True, index=True)
     name = Column(String, nullable=False)
     seat_number = Column(String, nullable=True)
-    student_phone = Column(String, nullable=True)  # DB uses student_phone, not phone
+    student_phone = Column(String, nullable=True)
     parent_phone = Column(String, nullable=True)
     status = Column(String, default="재원")
 
@@ -110,12 +114,11 @@ class ClassUpSession(Base):
     updated_at = Column(DateTime, default=lambda: datetime.now(KST))
 
 
-# ============ 스크래퍼 ============
+# ============ 유틸리티 함수 ============
 
-# 올바른 URL - dittonweb과 동일하게 academy.classup.io 사용
 CLASSUP_URL = "https://academy.classup.io/user/entrance"
-
 SESSION_FILE = Path(__file__).parent / "classup_session.json"
+
 
 def get_session_from_db():
     """DB에서 세션 storage_state 조회 및 파일로 저장"""
@@ -123,13 +126,11 @@ def get_session_from_db():
     try:
         session = db.query(ClassUpSession).filter_by(session_key="default").first()
         if session:
-            # storage_state 전체를 파일로 저장 (Playwright가 파일 경로 필요)
             with open(SESSION_FILE, 'w', encoding='utf-8') as f:
                 f.write(session.session_data)
-
             storage_state = json.loads(session.session_data)
             cookie_count = len(storage_state.get("cookies", [])) if isinstance(storage_state, dict) else 0
-            return cookie_count  # 쿠키 개수 반환 (성공 여부 확인용)
+            return cookie_count
         return None
     finally:
         db.close()
@@ -137,7 +138,6 @@ def get_session_from_db():
 
 def match_student(name: str, phone: str, db) -> int:
     """학생 이름/전화번호로 매칭"""
-    # 이름으로 먼저 검색
     student = db.query(Student).filter(
         Student.name == name,
         Student.status == "재원"
@@ -146,22 +146,21 @@ def match_student(name: str, phone: str, db) -> int:
     if student:
         return student.id
 
-    # 전화번호로 검색
     if phone:
         clean_phone = phone.replace("-", "").replace(" ", "")
-        student = db.query(Student).filter(
-            (Student.student_phone.contains(clean_phone[-4:])) |
-            (Student.parent_phone.contains(clean_phone[-4:]))
-        ).first()
-        if student:
-            return student.id
+        if len(clean_phone) >= 4:
+            student = db.query(Student).filter(
+                (Student.student_phone.contains(clean_phone[-4:])) |
+                (Student.parent_phone.contains(clean_phone[-4:]))
+            ).first()
+            if student:
+                return student.id
 
     return None
 
 
 def is_duplicate(db, name: str, status: str, record_time: datetime) -> bool:
-    """중복 기록 확인 (같은 이름, 상태, 시간)"""
-    # 1분 이내 같은 기록이 있으면 중복
+    """중복 기록 확인"""
     time_window = timedelta(minutes=1)
     existing = db.query(ClassUpAttendance).filter(
         ClassUpAttendance.student_name == name,
@@ -172,77 +171,21 @@ def is_duplicate(db, name: str, status: str, record_time: datetime) -> bool:
     return existing is not None
 
 
-def scrape_attendance(page) -> list:
-    """출입 기록 스크래핑"""
+def parse_record_time(record_time_str: str):
+    """시간 문자열 파싱"""
     try:
-        # networkidle 대기하여 JavaScript 렌더링 완료 보장
-        page.goto(CLASSUP_URL, wait_until='networkidle', timeout=30000)
-        page.wait_for_timeout(500)  # 추가 대기
-
-        current_url = page.url
-        logger.info(f"현재 URL: {current_url}")
-
-        # 로그인 페이지로 리다이렉트되었는지 확인
-        if "login" in current_url.lower():
-            logger.error("로그인 페이지로 리다이렉트됨 - 세션이 만료되었을 수 있습니다")
-            return []
-
-        # 팝업 닫기 (있을 경우)
-        page.keyboard.press("Escape")
-        page.wait_for_timeout(200)
-
-        page.wait_for_selector("table", timeout=10000)
-
-        records = []
-        # _fast_worker와 동일한 셀렉터 사용
-        rows = page.query_selector_all('table tbody tr, table tr')
-        logger.info(f"테이블 행 수: {len(rows)}")
-
-        for row in rows:
-            try:
-                cells = row.query_selector_all('td')
-
-                # _fast_worker와 동일한 5셀 구조: name, phone, available_time, status, record_time
-                if len(cells) >= 5:
-                    name = cells[0].inner_text().strip()
-                    phone = cells[1].inner_text().strip()
-                    available_time = cells[2].inner_text().strip()
-                    status = cells[3].inner_text().strip()
-                    record_time_str = cells[4].inner_text().strip()
-
-                    # 시간 파싱 (예: "2025-12-03 14:30:00" 또는 "14:30")
-                    record_time = None
-                    try:
-                        if " " in record_time_str:
-                            # Full datetime format
-                            record_time = datetime.strptime(record_time_str, "%Y-%m-%d %H:%M:%S")
-                            record_time = KST.localize(record_time)
-                        elif ":" in record_time_str:
-                            # Time only
-                            today = datetime.now(KST).date()
-                            parts = record_time_str.split(":")
-                            hour, minute = int(parts[0]), int(parts[1])
-                            record_time = datetime(today.year, today.month, today.day,
-                                                   hour, minute, tzinfo=KST)
-                    except:
-                        pass
-
-                    if name and status and record_time:
-                        records.append({
-                            "name": name,
-                            "phone": phone,
-                            "available_time": available_time,
-                            "status": status,
-                            "status_detail": None,
-                            "record_time": record_time
-                        })
-            except Exception as e:
-                continue
-
-        return records
-    except Exception as e:
-        logger.error(f"스크래핑 오류: {e}")
-        return []
+        record_time_str = record_time_str.strip()
+        if " " in record_time_str:
+            record_time = datetime.strptime(record_time_str, "%Y-%m-%d %H:%M:%S")
+            return KST.localize(record_time)
+        elif ":" in record_time_str:
+            today = datetime.now(KST).date()
+            parts = record_time_str.split(":")
+            hour, minute = int(parts[0]), int(parts[1])
+            return datetime(today.year, today.month, today.day, hour, minute, tzinfo=KST)
+    except:
+        pass
+    return None
 
 
 def save_records(records: list) -> dict:
@@ -252,20 +195,16 @@ def save_records(records: list) -> dict:
 
     try:
         for rec in records:
-            # 중복 확인
             if is_duplicate(db, rec["name"], rec["status"], rec["record_time"]):
                 continue
 
-            # 학생 매칭
             student_id = match_student(rec["name"], rec["phone"], db)
 
-            # 지각 여부 (08:00 이후 입장)
             is_late = False
             if rec["status"] == "입장":
                 if rec["record_time"].hour >= 8 and rec["record_time"].minute > 10:
                     is_late = True
 
-            # 저장
             attendance = ClassUpAttendance(
                 student_name=rec["name"],
                 phone_number=rec["phone"],
@@ -279,7 +218,6 @@ def save_records(records: list) -> dict:
             db.add(attendance)
             result["new"] += 1
 
-        # 동기화 로그
         sync_log = ClassUpSyncLog(
             records_fetched=result["fetched"],
             new_records=result["new"],
@@ -298,74 +236,250 @@ def save_records(records: list) -> dict:
     return result
 
 
+# ============ 브라우저 관리 클래스 ============
+
+class BrowserManager:
+    """브라우저 생명주기 관리"""
+
+    def __init__(self):
+        self.playwright = None
+        self.browser = None
+        self.context = None
+        self.page = None
+        self.is_initialized = False
+
+    def start(self):
+        """브라우저 시작"""
+        try:
+            self.playwright = sync_playwright().start()
+            self.browser = self.playwright.chromium.launch(
+                headless=True,
+                args=[
+                    '--no-sandbox',
+                    '--disable-dev-shm-usage',
+                    '--disable-gpu',
+                    '--single-process',
+                    '--no-zygote'
+                ]
+            )
+            self._create_context()
+            logger.info("브라우저 시작 완료")
+            return True
+        except Exception as e:
+            logger.error(f"브라우저 시작 실패: {e}")
+            return False
+
+    def _create_context(self):
+        """새 컨텍스트/페이지 생성"""
+        if self.context:
+            try:
+                self.context.close()
+            except:
+                pass
+
+        self.context = self.browser.new_context(
+            viewport={'width': 1920, 'height': 1080},
+            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            ignore_https_errors=True,
+            locale='ko-KR',
+            timezone_id='Asia/Seoul',
+            storage_state=str(SESSION_FILE) if SESSION_FILE.exists() else None
+        )
+        self.page = self.context.new_page()
+        self.is_initialized = False
+
+    def initialize_page(self) -> bool:
+        """페이지 초기 로드"""
+        try:
+            self.page.goto(CLASSUP_URL, wait_until='networkidle', timeout=30000)
+            time.sleep(1)
+
+            if "login" in self.page.url.lower():
+                logger.error("로그인 페이지로 리다이렉트됨 - 세션 만료")
+                return False
+
+            # 팝업 닫기
+            self.page.keyboard.press("Escape")
+            time.sleep(0.3)
+
+            self.page.wait_for_selector("table", timeout=10000)
+            self.is_initialized = True
+            logger.info(f"페이지 초기화 완료: {self.page.url}")
+            return True
+        except Exception as e:
+            logger.error(f"페이지 초기화 실패: {e}")
+            return False
+
+    def scrape(self) -> list:
+        """페이지에서 데이터 스크래핑"""
+        records = []
+
+        try:
+            # 초기화 안됐으면 초기화
+            if not self.is_initialized:
+                if not self.initialize_page():
+                    return []
+            else:
+                # 이미 초기화됐으면 reload만
+                self.page.reload(wait_until='networkidle', timeout=15000)
+                time.sleep(0.3)
+
+            # 로그인 체크
+            if "login" in self.page.url.lower():
+                logger.error("세션 만료 감지")
+                self.is_initialized = False
+                return []
+
+            # 팝업 닫기
+            self.page.keyboard.press("Escape")
+            time.sleep(0.1)
+
+            # 테이블 데이터 수집
+            rows = self.page.query_selector_all('table tbody tr, table tr')
+
+            for row in rows:
+                try:
+                    cells = row.query_selector_all('td')
+                    if len(cells) >= 5:
+                        name = cells[0].inner_text().strip()
+                        phone = cells[1].inner_text().strip()
+                        available_time = cells[2].inner_text().strip()
+                        status = cells[3].inner_text().strip()
+                        record_time_str = cells[4].inner_text().strip()
+
+                        record_time = parse_record_time(record_time_str)
+
+                        if name and status and record_time:
+                            records.append({
+                                "name": name,
+                                "phone": phone,
+                                "available_time": available_time,
+                                "status": status,
+                                "status_detail": None,
+                                "record_time": record_time
+                            })
+                except:
+                    continue
+
+            return records
+
+        except PlaywrightError as e:
+            error_msg = str(e).lower()
+            if "crash" in error_msg or "closed" in error_msg or "target" in error_msg:
+                logger.warning(f"페이지 크래시 감지, 컨텍스트 재생성: {e}")
+                self._create_context()
+            else:
+                logger.error(f"Playwright 오류: {e}")
+            return []
+        except Exception as e:
+            logger.error(f"스크래핑 오류: {e}")
+            return []
+
+    def restart(self):
+        """브라우저 완전 재시작"""
+        logger.info("브라우저 재시작 중...")
+        self.stop()
+        time.sleep(2)
+        get_session_from_db()  # 세션 다시 로드
+        return self.start()
+
+    def stop(self):
+        """브라우저 종료"""
+        try:
+            if self.page:
+                self.page.close()
+        except:
+            pass
+        try:
+            if self.context:
+                self.context.close()
+        except:
+            pass
+        try:
+            if self.browser:
+                self.browser.close()
+        except:
+            pass
+        try:
+            if self.playwright:
+                self.playwright.stop()
+        except:
+            pass
+        self.playwright = None
+        self.browser = None
+        self.context = None
+        self.page = None
+        self.is_initialized = False
+
+
+# ============ 메인 워커 ============
+
 def run_worker():
     """워커 메인 루프"""
     logger.info("ClassUp Worker 시작")
 
-    # 세션 확인 및 파일로 저장
+    # 세션 확인
     cookie_count = get_session_from_db()
     if not cookie_count:
-        logger.error("세션이 없습니다. 먼저 메인 서버에서 ClassUp 로그인을 해주세요.")
+        logger.error("세션이 없습니다. 메인 서버에서 ClassUp 로그인을 해주세요.")
         logger.info("30초 후 재시도...")
         time.sleep(30)
-        return run_worker()  # 재시도
+        return run_worker()
 
     logger.info(f"세션 로드 완료: {cookie_count}개 쿠키")
 
-    with sync_playwright() as p:
-        browser = p.chromium.launch(
-            headless=True,
-            args=['--no-sandbox', '--disable-dev-shm-usage']
-        )
+    manager = BrowserManager()
+    if not manager.start():
+        logger.error("브라우저 시작 실패, 30초 후 재시도")
+        time.sleep(30)
+        return run_worker()
 
-        # storage_state 파일 경로로 전체 세션 로드 (쿠키 + localStorage)
-        context = browser.new_context(
-            viewport={'width': 1920, 'height': 1080},
-            user_agent='Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-            ignore_https_errors=True,  # SSL 인증서 오류 무시
-            locale='ko-KR',
-            timezone_id='Asia/Seoul',
-            storage_state=str(SESSION_FILE)  # 전체 세션 상태 로드
-        )
+    scrape_count = 0
+    error_count = 0
 
-        page = context.new_page()
-
-        logger.info("브라우저 시작 완료, 스크래핑 시작")
-
-        scrape_count = 0
-        error_count = 0
-
+    try:
         while True:
-            try:
-                scrape_count += 1
-                records = scrape_attendance(page)
+            scrape_count += 1
 
-                if records:
-                    result = save_records(records)
-                    if result.get("new", 0) > 0:
-                        logger.info(f"[{scrape_count}] 새 기록: {result['new']}개")
-                    error_count = 0  # 성공하면 에러 카운트 리셋
-                else:
-                    error_count += 1
-                    if error_count > 10:
-                        logger.warning("연속 10회 빈 결과, 세션 확인 필요")
-                        error_count = 0
+            # 주기적 브라우저 재시작 (메모리 관리)
+            if scrape_count > 0 and scrape_count % BROWSER_RESTART_INTERVAL == 0:
+                logger.info(f"[{scrape_count}] 주기적 브라우저 재시작")
+                if not manager.restart():
+                    logger.error("브라우저 재시작 실패")
+                    time.sleep(10)
+                    continue
+                error_count = 0
 
-            except Exception as e:
-                logger.error(f"루프 오류: {e}")
+            # 스크래핑
+            records = manager.scrape()
+
+            if records:
+                result = save_records(records)
+                if result.get("new", 0) > 0:
+                    logger.info(f"[{scrape_count}] 새 기록: {result['new']}개 (총 {len(records)}개)")
+                error_count = 0
+            else:
                 error_count += 1
+                if error_count % 10 == 0:
+                    logger.warning(f"연속 {error_count}회 빈 결과")
 
-                # 너무 많은 에러면 세션 재확인
-                if error_count > 5:
-                    logger.info("세션 재확인 중...")
-                    session_cookies = get_session_from_db()
-                    if session_cookies:
-                        context.clear_cookies()
-                        context.add_cookies(session_cookies)
+                # 연속 에러가 많으면 브라우저 재시작
+                if error_count >= 20:
+                    logger.warning("연속 20회 실패, 브라우저 재시작")
+                    if manager.restart():
                         error_count = 0
+                    else:
+                        time.sleep(30)
 
-            # 2초 대기
-            time.sleep(2)
+            time.sleep(SCRAPE_INTERVAL)
+
+    except KeyboardInterrupt:
+        logger.info("종료 신호 수신")
+    except Exception as e:
+        logger.error(f"워커 오류: {e}")
+    finally:
+        manager.stop()
+        logger.info("ClassUp Worker 종료")
 
 
 if __name__ == "__main__":
