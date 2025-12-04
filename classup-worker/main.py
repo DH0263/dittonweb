@@ -457,6 +457,9 @@ def run_worker():
                 result = save_records(records)
                 if result.get("new", 0) > 0:
                     logger.info(f"[{scrape_count}] 새 기록: {result['new']}개 (총 {len(records)}개)")
+                elif scrape_count % 20 == 0:
+                    # 20회마다 상태 로그 (새 기록 없어도)
+                    logger.info(f"[{scrape_count}] 스크래핑 정상 - {len(records)}개 확인 (새 기록 없음)")
                 error_count = 0
             else:
                 error_count += 1
