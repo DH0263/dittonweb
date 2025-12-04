@@ -30,6 +30,15 @@ from ai_chat.models import ChatSession, ChatMessage, DailyUsage
 # Solapi 문자/카카오톡 발송 서비스
 from solapi_service import message_service
 
+# 순찰 모니터링 스케줄러
+from patrol_scheduler import patrol_monitor, get_patrol_monitor
+
+# 시간표 유틸리티
+from utils.schedule import (
+    get_period_status, get_operating_hours_info, is_class_time,
+    get_current_period as utils_get_current_period, is_meal_or_break_time
+)
+
 models.Base.metadata.create_all(bind=engine)
 kiosk_models.Base.metadata.create_all(bind=engine)  # 키오스크 테이블 생성
 
@@ -217,28 +226,63 @@ async def startup_event():
         )
     print("[스케줄러] 시작: 각 교시 시작 시 지각 → 자습중 자동 변환")
 
+    # 매일 새벽 4시 - ClassUp 데이터 자동 정리
+    def run_classup_cleanup():
+        from classup.cleanup import run_cleanup
+        db = SessionLocal()
+        try:
+            result = run_cleanup(db)
+            print(f"[ClassUp 정리] 완료: SyncLog {result['sync_logs_deleted']}개, 일반기록 {result['normal_records_deleted']}개 삭제")
+        finally:
+            db.close()
+
+    scheduler.add_job(
+        run_classup_cleanup,
+        trigger=CronTrigger(hour=4, minute=0, timezone='Asia/Seoul'),
+        id="classup_cleanup",
+        replace_existing=True
+    )
+    print("[스케줄러] 시작: 매일 04:00에 ClassUp 데이터 자동 정리")
+
     scheduler.start()
 
-    # ClassUp 자동 동기화 시작 (세션이 있으면)
+    # 순찰 모니터링 스케줄러 시작
+    patrol_monitor.set_db_session_factory(SessionLocal)
+    patrol_monitor.start()
+    print("[순찰 모니터] 시작: 15분/25분 경과 시 Discord 알림")
+
+    # ClassUp 자동 동기화 시작
     from classup.scraper import has_saved_session
-    if has_saved_session():
-        import asyncio
-        from classup.router import start_sync
-        from fastapi import BackgroundTasks
-        # 직접 동기화 루프 시작
-        from classup import router as classup_router_module
+    from classup import router as classup_router_module
+    import asyncio
+
+    # 외부 Worker 모드 확인
+    external_worker_mode = os.getenv("CLASSUP_WORKER_EXTERNAL", "").lower() in ("true", "1", "yes")
+
+    if external_worker_mode:
+        # 외부 Worker 모드: 알림 처리 루프만 시작 (스크래핑은 classup-worker가 담당)
+        classup_router_module._sync_running = True
+        from database import SessionLocal
+        classup_router_module._sync_task = asyncio.create_task(
+            classup_router_module.external_worker_notification_loop(SessionLocal)
+        )
+        print("[ClassUp] 외부 Worker 모드 - Discord 알림 처리 루프 시작 (10초 간격)")
+    elif has_saved_session():
+        # 내부 모드: 직접 스크래핑 + 알림 처리
         classup_router_module._sync_running = True
         from database import SessionLocal
         classup_router_module._sync_task = asyncio.create_task(
             classup_router_module.continuous_sync_loop(SessionLocal)
         )
-        print("[ClassUp] 자동 동기화 시작 (5초 간격)")
+        print("[ClassUp] 내부 모드 - 자동 동기화 시작 (5초 간격)")
 
 @app.on_event("shutdown")
 def shutdown_event():
     """FastAPI 종료 시 스케줄러 종료"""
     scheduler.shutdown()
+    patrol_monitor.stop()
     print("[스케줄러] 종료")
+    print("[순찰 모니터] 종료")
 
 @app.get("/")
 def read_root():
@@ -283,6 +327,52 @@ def get_period_start_time(period: int):
         "start_time": start,
         "end_time": end
     }
+
+
+# --- Schedule Utility Endpoints ---
+@app.get("/schedule/status")
+def get_schedule_status_api():
+    """
+    현재 시간대 상태 조회 (utils.schedule 모듈 사용)
+
+    Returns:
+        status: "class" | "break" | "lunch" | "dinner" | "before_opening" | "after_closing"
+        period_name: "1교시" | None
+        is_patrol_time: True | False (순찰 가능 시간인지)
+        message: 현재 상태 메시지
+    """
+    return get_period_status()
+
+
+@app.get("/schedule/operating-hours")
+def get_operating_hours_api():
+    """
+    운영 시간 정보 조회 (프론트엔드 표시용)
+
+    Returns:
+        opening, closing, lunch, dinner, periods, breaks 정보
+    """
+    return get_operating_hours_info()
+
+
+@app.get("/patrol-monitor/status")
+def get_patrol_monitor_status_api():
+    """
+    순찰 모니터링 상태 조회
+
+    Returns:
+        is_running: 스케줄러 실행 중 여부
+        is_class_time: 현재 수업 시간인지
+        period_status: 현재 시간대 상태
+        last_patrol_time: 마지막 순찰 시간
+        elapsed_minutes: 경과 시간 (분)
+        alert_15_sent: 15분 알림 전송 여부
+        alert_25_sent: 25분 알림 전송 여부
+        warning_threshold: 경고 임계값 (분)
+        alert_threshold: 긴급 알림 임계값 (분)
+    """
+    return patrol_monitor.get_status()
+
 
 # --- Student Endpoints ---
 @app.post("/students/", response_model=schemas.Student)
@@ -1120,7 +1210,7 @@ def start_patrol(db: Session = Depends(get_db)):
             "start_time": str(existing_patrol.start_time)
         }
     
-    # ???쒖같 ?쒖옉
+    # 새 순찰 시작
     new_patrol = models.Patrol(
         patrol_date=now.date(),
         start_time=now.time(),
@@ -1129,10 +1219,13 @@ def start_patrol(db: Session = Depends(get_db)):
     db.add(new_patrol)
     db.commit()
     db.refresh(new_patrol)
-    
+
+    # 순찰 알림 상태 초기화
+    patrol_monitor.reset_alerts()
+
     return {
         "patrol_id": new_patrol.id,
-        "message": "?쒖같???쒖옉?섏뿀?듬땲??",
+        "message": "순찰이 시작되었습니다.",
         "start_time": str(new_patrol.start_time)
     }
 
@@ -1155,8 +1248,11 @@ def end_patrol(patrol_id: int, notes: str = "", inspector_name: str = "", db: Se
 
     db.commit()
     db.refresh(patrol)
-    
-    # ???쒖같?먯꽌 泥댄겕???쒕룄 湲곕줉 ??議고쉶
+
+    # 순찰 알림 상태 초기화
+    patrol_monitor.reset_alerts()
+
+    #???쒖같?먯꽌 泥댄겕???쒕룄 湲곕줉 ??議고쉶
     check_count = db.query(models.StudyAttitudeCheck).filter(
         models.StudyAttitudeCheck.patrol_id == patrol_id
     ).count()

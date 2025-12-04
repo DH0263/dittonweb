@@ -500,6 +500,78 @@ async def check_missing_returns(db: Session):
     return len(pending_returns)
 
 
+async def process_unnotified_records(db: Session):
+    """외부 Worker가 저장한 레코드 중 Discord 알림 미전송 건 처리"""
+    from datetime import timedelta
+
+    # 오늘 날짜의 알림 미전송 레코드 조회
+    today = datetime.now(KST).date()
+    start_of_day = datetime.combine(today, time_type(0, 0)).replace(tzinfo=KST)
+
+    unnotified = db.query(ClassUpAttendance).filter(
+        ClassUpAttendance.discord_notified == False,
+        ClassUpAttendance.record_time >= start_of_day
+    ).order_by(ClassUpAttendance.record_time.asc()).limit(20).all()  # 한 번에 최대 20개
+
+    processed = 0
+    for record in unnotified:
+        try:
+            # 학생 정보 조회
+            student = None
+            if record.local_student_id:
+                student = db.query(models.Student).filter(
+                    models.Student.id == record.local_student_id
+                ).first()
+
+            # 일정 유효성 검증 사유 (기존에 저장된 값 사용)
+            validation_reason = ""
+            if record.is_schedule_valid is False:
+                validation_reason = "일정 검증 미통과"
+
+            # Discord 알림 전송
+            await send_discord_alert_extended(record, student, validation_reason, db)
+            processed += 1
+
+        except Exception as e:
+            logger.error(f"Discord 알림 처리 오류 ({record.id}): {e}")
+            # 오류 발생해도 다음 레코드 계속 처리
+            continue
+
+    return processed
+
+
+async def external_worker_notification_loop(db_session_factory):
+    """외부 Worker 모드일 때 Discord 알림 처리 백그라운드 루프"""
+    global _sync_running
+
+    logger.info("[외부 Worker 모드] Discord 알림 처리 루프 시작")
+
+    while _sync_running:
+        try:
+            db = db_session_factory()
+            try:
+                # 미전송 알림 처리
+                processed = await process_unnotified_records(db)
+                if processed > 0:
+                    logger.info(f"Discord 알림 {processed}건 전송 완료")
+
+                # 복귀 미확인 학생 체크
+                missing_count = await check_missing_returns(db)
+                if missing_count > 0:
+                    logger.info(f"복귀 미확인 알림 전송: {missing_count}명")
+
+            finally:
+                db.close()
+
+        except Exception as e:
+            logger.error(f"알림 처리 루프 오류: {e}")
+
+        # 10초 간격으로 체크
+        await asyncio.sleep(10)
+
+    logger.info("[외부 Worker 모드] Discord 알림 처리 루프 종료")
+
+
 async def send_forced_exit_morning_alert(db: Session):
     """강제퇴장 다음날 아침 알림 - 매일 09:00에 실행 (경고 채널)"""
     from datetime import timedelta
