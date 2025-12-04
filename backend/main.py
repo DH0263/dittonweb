@@ -290,6 +290,16 @@ def shutdown_event():
 def read_root():
     return {"message": "Welcome to Ditton Bot API"}
 
+@app.get("/debug/env")
+def debug_env():
+    """디버그: 환경변수 확인"""
+    external_worker_env = os.getenv("CLASSUP_WORKER_EXTERNAL", "")
+    external_worker_mode = external_worker_env.lower() in ("true", "1", "yes")
+    return {
+        "CLASSUP_WORKER_EXTERNAL": external_worker_env,
+        "external_worker_mode": external_worker_mode
+    }
+
 # --- System Endpoints (Period Validation) ---
 @app.get("/system/current-period")
 def get_current_period_api():
