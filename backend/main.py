@@ -257,7 +257,9 @@ async def startup_event():
     import asyncio
 
     # 외부 Worker 모드 확인
-    external_worker_mode = os.getenv("CLASSUP_WORKER_EXTERNAL", "").lower() in ("true", "1", "yes")
+    external_worker_env = os.getenv("CLASSUP_WORKER_EXTERNAL", "")
+    external_worker_mode = external_worker_env.lower() in ("true", "1", "yes")
+    print(f"[ClassUp] 환경변수 CLASSUP_WORKER_EXTERNAL='{external_worker_env}' -> 외부모드={external_worker_mode}")
 
     if external_worker_mode:
         # 외부 Worker 모드: 알림 처리 루프만 시작 (스크래핑은 classup-worker가 담당)
